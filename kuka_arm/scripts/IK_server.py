@@ -7,7 +7,7 @@
 #
 # All Rights Reserved.
 
-# Author: Harsh Pandya
+# Author: Christopher Angell
 
 # import modules
 import rospy
@@ -19,15 +19,13 @@ from mpmath import *
 from sympy import *
 import numpy as np
 
-# Create symbols
 q1, q2, q3, q4, q5, q6, q7 = symbols('q1:8')
 d1, d2, d3, d4, d5, d6, d7 = symbols('d1:8')
 a0, a1, a2, a3, a4, a5, a6 = symbols('a0:7')
 alpha0, alpha1, alpha2, alpha3, alpha4, alpha5, alpha6 = symbols('alpha0:7')
 
 ### KUKA KR210 ###
-# Create Modified DH parameters
-#
+# DH parameters
 s = {alpha0:     0,  a0:     0,  d1:  0.75,
      alpha1: -pi/2,  a1:  0.35,  d2:     0, q2: q2 - pi/2,
      alpha2:     0,  a2:  1.25,  d3:     0,
@@ -36,7 +34,6 @@ s = {alpha0:     0,  a0:     0,  d1:  0.75,
      alpha5: -pi/2,  a5:     0,  d6:     0,
      alpha6:     0,  a6:     0,  d7:  0.303, q7: 0}
 
-# Define Modified DH Transformation matrix
 def TF_Matrix(alpha, a, d, q):
     TF = Matrix([[            cos(q),          -sin(q),           0,             a],
                  [sin(q)*cos(alpha), cos(q)*cos(alpha), -sin(alpha), -sin(alpha)*d],
@@ -44,8 +41,6 @@ def TF_Matrix(alpha, a, d, q):
                  [                  0,               0,           0,             1]])
     return TF
 
-# Create individual transformation matrices
-#
 T0_1 = TF_Matrix(alpha0, a0, d1, q1).subs(s)
 T1_2 = TF_Matrix(alpha1, a1, d2, q2).subs(s)
 T2_3 = TF_Matrix(alpha2, a2, d3, q3).subs(s)
@@ -61,24 +56,12 @@ T0_5 = (T0_4 * T4_5)
 T0_6 = (T0_5 * T5_6)
 T0_G = (T0_6 * T6_G)
 
-R_z = Matrix([[    cos(np.pi), -sin(np.pi),  0,  0],
-              [    sin(np.pi),  cos(np.pi),  0,  0],
-              [         0,           0,  1,  0],
-              [         0,           0,  0,  1]])
-R_y = Matrix([[ cos(-np.pi/2),  0,  sin(-np.pi/2),  0],
-              [             0,  1,              0,  0],
-              [-sin(-np.pi/2),  0,  cos(-np.pi/2),  0],
-              [             0,  0,              0,  1]])
+#T3_6 = simplify(T3_4*T4_5*T5_6)
+#print(T3_6)
 
-R_corr = simplify(R_z * R_y)
-
-T_total = (T0_G * R_corr)
-
-# Extract rotation matrices from the transformation matrices
-#
 yaws = symbols('yaws') # Z
 pitchs = symbols('pitchs') # Y
-rolls = symbols('rolls') # X
+rolls = symbols('rolls') # X -
 
 Rotz = Matrix([[    cos(yaws), -sin(yaws),  0,  0],
               [    sin(yaws),  cos(yaws),  0,  0],
@@ -93,9 +76,15 @@ Rotx = Matrix([[1,           0,          0,  0],
               [0,    sin(rolls),  cos(rolls),  0],
               [0,            0,          0,  1]])
 
-Rrpy = (Rotz * Roty)
-Rrpy = (Rrpy * Rotx)
-Rrpy = (Rrpy * R_corr)
+R_z = Rotz.subs(yaws, np.pi)
+R_y = Roty.subs(pitchs, -np.pi/2)
+
+R_corr = simplify(R_z * R_y)
+
+T_total = (T0_G * R_corr)
+
+Rrpy = Rotz * Roty * Rotx
+Rrpy = Rrpy * R_corr
 
 
 def handle_calculate_IK(req):
@@ -131,6 +120,9 @@ def handle_calculate_IK(req):
                 req.poses[x].orientation.z, req.poses[x].orientation.w])
 
         ### Your IK code here
+        # Most of the IK code is up above, out of the function so that it
+        # only executes a single time in the code rather than everytime that
+        # the function is called.
 	    # Compensate for rotation discrepancy between DH parameters and Gazebo
         Rrpyn = Rrpy.evalf(subs={rolls: roll, pitchs: pitch, yaws: yaw})
         nx = Rrpyn[0,2]
@@ -140,7 +132,7 @@ def handle_calculate_IK(req):
         wx = px - s[d7]*nx
         wy = py - s[d7]*ny
         wz = pz - s[d7]*nz
-	    #
+
 	    # Calculate joint angles using Geometric IK method
         theta1 = atan2(wy, wx)
         r = sqrt(wy**2 + wx**2) - s[a1]
@@ -148,11 +140,13 @@ def handle_calculate_IK(req):
         B = sqrt(r**2 + z**2)
         C = s[a2]
         A = sqrt(s[a3]**2 + s[d4]**2)
-	    #
-        #
+
+        # Theta3 is determined from the acos, and from subtracting off
+        # the small kink in the robotic arm design.
         beta = acos( (A**2 + C**2 - B**2)/(2*A*C) )
         theta3 = pi/2 - beta - atan2(-s[a3], s[d4]) #0.0054, a3, d4
-	    #
+	    # Theta2 is determined from overall angle of wrist center and then
+        # the angle of the triangle formed by the manipulator.
         alpha = acos(  (B**2 + C**2 - A**2)/(2*B*C) )
         phi = atan2(z, r)
         theta2 = pi/2 - phi - alpha
@@ -161,13 +155,22 @@ def handle_calculate_IK(req):
         # inv(R0_3) * Rpyn, then use the formula for R3_6 to extract each of
         # the angles.
         T0_3n = T0_3.evalf(subs={q1: theta1, q2: theta2, q3: theta3})
-        R3_6 = T0_3n.inv("LU")*Rrpyn
+        #R3_6 = T0_3n.inv("LU")*Rrpyn
+        # Taking the transpose to get the inverse seems to work whereas the
+        # above line did not work.
+        # This solution was borrowed from another students project.
+        R3_6 = T0_3n[0:3,0:3].transpose() * Rrpyn[0:3,0:3]
+
         sintheta5 = sqrt(R3_6[0,2]**2 + R3_6[2,2]**2) # + or - possible
         costheta5 = R3_6[1,2]
 
+        # if theta5 is small, then there is a degeneracy in the angles
+        # So take this into account.
         if sintheta5 > 0.01:
             theta4 = atan2(R3_6[2,2], -R3_6[0,2])
             theta4_alternate = atan2(-R3_6[2,2], R3_6[0,2])
+            # there are two options, so pick the option that is closest to the
+            # previous angle.
             if abs(theta4_alternate - theta4_prev) < abs(theta4 - theta4_prev):
                 theta5 = atan2(-sintheta5, costheta5)
                 theta6 = atan2(R3_6[1,1], -R3_6[1,0])

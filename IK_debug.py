@@ -67,7 +67,7 @@ T5_6 = TF_Matrix(alpha5, a5, d6, q6).subs(s)
 T6_G = TF_Matrix(alpha6, a6, d7, q7).subs(s)
 
 T0_2 = (T0_1 * T1_2)
-T0_3 = simplify(T0_2 * T2_3)
+T0_3 = (T0_2 * T2_3)
 T0_4 = (T0_3 * T3_4)
 T0_5 = (T0_4 * T4_5)
 T0_6 = (T0_5 * T5_6)
@@ -75,19 +75,6 @@ T0_G = (T0_6 * T6_G)
 
 #T3_6 = simplify(T3_4*T4_5*T5_6)
 #print(T3_6)
-
-R_z = Matrix([[-1, 0,  0,  0],
-              [ 0,-1,  0,  0],
-              [ 0, 0,  1,  0],
-              [ 0, 0,  0,  1]])
-R_y = Matrix([[0,  0, -1,  0],
-              [0,  1,  0,  0],
-              [1,  0,  0,  0],
-              [0,  0,  0,  1]])
-
-R_corr = simplify(R_z * R_y)
-
-T_total = (T0_G * R_corr)
 
 yaws = symbols('yaws') # Z
 pitchs = symbols('pitchs') # Y
@@ -105,6 +92,12 @@ Rotx = Matrix([[1,           0,          0,  0],
               [0,    cos(rolls), -sin(rolls),  0],
               [0,    sin(rolls),  cos(rolls),  0],
               [0,            0,          0,  1]])
+
+R_z = Rotz.subs(yaws, np.pi)
+R_y = Roty.subs(pitchs, -np.pi/2)
+R_corr = simplify(R_z * R_y)
+
+T_total = (T0_G * R_corr)
 
 Rrpy = Rotz * Roty * Rotx
 Rrpy = Rrpy * R_corr
@@ -163,6 +156,9 @@ def test_code(test_case):
                 req.poses[x].orientation.z, req.poses[x].orientation.w])
 
         ### Your IK code here
+        # Most of the IK code is up above, out of the function so that it
+        # only executes a single time in the code rather than everytime that
+        # the function is called.
 	    # Compensate for rotation discrepancy between DH parameters and Gazebo
         Rrpyn = Rrpy.evalf(subs={rolls: roll, pitchs: pitch, yaws: yaw})
         nx = Rrpyn[0,2]
@@ -175,13 +171,13 @@ def test_code(test_case):
 	    #
 	    # Calculate joint angles using Geometric IK method
         theta1 = atan2(wy, wx)
-        #print(wy, wx, theta1, test_case[2][0])
         r = sqrt(wy**2 + wx**2) - s[a1] # 0.35
         z = wz - s[d1] # 0.75
         B = sqrt(r**2 + z**2)
         C = s[a2]
         A = sqrt(s[a3]**2 + s[d4]**2)
-	    #
+	    # Theta3 is determined from the acos, and from subtracting off
+        # the small kink in the robotic arm design.
         beta = acos( (A**2 + C**2 - B**2)/(2*A*C) )
         theta3 = np.pi/2 - beta - atan2(-s[a3], s[d4]) #0.0054, a3, d4
 	    #
@@ -194,13 +190,16 @@ def test_code(test_case):
         # the angles.
         #T0_3  = T0_1[0:3,0:3] * T1_2[0:3,0:3] * T2_3[0:3,0:3]
         T0_3n = T0_3.evalf(subs={q1: theta1, q2: theta2, q3: theta3})
-        #T0_3n = T_total.evalf(subs={q1: -0.11, q2: 0.60, q3: -1.44, q4: -3.88, q5: -0.67, q6: 0})
-        #print(T0_3n[0,3], T0_3n[1,3], T0_3n[2,3])
-        R3_6 = T0_3n[0:3,0:3].inv("LU")*Rrpyn[0:3,0:3]
+        #R3_6 = T0_3n[0:3,0:3].inv("LU")*Rrpyn[0:3,0:3]
+        # Taking the transpose to get the inverse seems to work whereas the
+        # above line did not work.
+        # This solution was borrowed from another students project.
+        R3_6 = T0_3n[0:3,0:3].transpose() * Rrpyn[0:3,0:3]
+        print(R3_6)
+
         sintheta5 = sqrt(R3_6[0,2]**2 + R3_6[2,2]**2)
         costheta5 = R3_6[1,2]
 
-        print(sintheta5, costheta5)
         if sintheta5 > 0.01:
             theta4 = atan2(R3_6[2,2]/sintheta5, -R3_6[0,2]/sintheta5)
             theta5 = atan2(sintheta5, costheta5)
